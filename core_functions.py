@@ -1,17 +1,11 @@
 import pandas as pd
-import glob
 import matplotlib.pyplot as plt
-import matplotlib
 from itertools import groupby
 from fractions import Fraction
 
 from matplotlib.patches import Wedge
 import matplotlib.colors as mcolors
-import numpy as np
 from scipy.interpolate import interp1d
-
-import math
-from functools import reduce
 
 from carpePy.diem_helper_functions import *
 from .mathematica2python import *
