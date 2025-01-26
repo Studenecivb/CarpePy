@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: Baird
+    given-names: Stuart J.E.
+  - family-names: Daley
+    given-names: Nina
+title: "CarpePy"
+version: 0.0.9
+date-released: 2025-01-26
