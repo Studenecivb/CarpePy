@@ -213,3 +213,12 @@ def Accumulate(lst): return list(itertools.accumulate(lst))
 
 
 def Length(x): return len(x)
+
+
+def StringTakeList(string, lengths):
+    substrings = []
+    current_index = 0
+    for length in lengths:
+        substrings.append(string[current_index:current_index + length])
+        current_index += length
+    return substrings

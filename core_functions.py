@@ -3,18 +3,21 @@ import glob
 import matplotlib.pyplot as plt
 import matplotlib
 from itertools import groupby
+from fractions import Fraction
 
+from matplotlib.patches import Wedge
+import matplotlib.colors as mcolors
 import numpy as np
 from scipy.interpolate import interp1d
 
 import math
 from functools import reduce
-import matplotlib.colors as mcolors
 
-from .diem_helper_functions import *
+from carpePy.diem_helper_functions import *
 from .mathematica2python import *
 
 
+# Polarise and Join
 def polarise_n_join(polarisation_data, s_data):
     modified_data = []
     for i in range(len(polarisation_data)):
@@ -30,27 +33,153 @@ def polarise_n_join(polarisation_data, s_data):
     return modified_data
 
 
-def generate_bed_data(dimension_lengths):
-    data = []
-    for c in range(1, len(dimension_lengths) + 1):
-        length = dimension_lengths[c - 1]
-        # Create a list of tuples (compartment index, range values)
-        compartment_data = [(c, value) for value in 100 * np.arange(1, length + 1)]
-        data.extend(compartment_data)
-    return data
+# AnnotatedHITally
+def AnnotatedHITally(markers):
+    string_counts = Counter(markers)
+    sorted_counts = sorted(string_counts.items(), key=lambda x: x[1], reverse=True)
+    df = pd.DataFrame(sorted_counts, columns=["Type", "N"])
+    total_strings = len(markers)
+    df["p"] = df["N"] / total_strings
+    df["cum(p)"] = df["p"].cumsum()
+    return df
 
 
-# Function to split the list into chunks
-def split_list(data_list, lengths):
-    result = []
-    start = 0
-    for length in lengths:
-        end = start + length
-        result.append(data_list[start:end])
-        start = end
-    return result
+# DiemPlotPrep Class
+class DiemPlotPrep:
+    def __init__(self, plot_theme, ind_ids, polarised_data, di_threshold, di_column, phys_res):
+        self.polarised_data = polarised_data
+        self.di_threshold = di_threshold
+        self.di_column = di_column
+        self.phys_res = phys_res
+        self.plot_theme = plot_theme
+        self.ind_ids = ind_ids
+
+        self.diemPlotLabel = None
+        self.DIfilteredDATA = None
+        self.DIfilteredGenomes = None
+        self.DIfilteredHIs = None
+        self.DIfilteredBED = None
+        self.DIpercent = None
+        self.DIfilteredScafRLEs = None
+        self.diemDITgenomes = None
+
+        self.diem_plot_prep()
+
+    def diem_plot_prep(self):
+        """ Perform DI filtering, dithering, and label generation """
+        self.filter_data()
+
+        self.diem_dithering()
+
+        self.generate_plot_label(self.plot_theme)
+
+    def filter_data(self):
+        """ Apply DI threshold filtering on the data """
+        if isinstance(self.di_threshold, str):  # No filtering if threshold is a string
+            self.DIfilteredDATA = self.polarised_data
+        elif len(self.di_threshold) == 0:  # Filter above if threshold is just one number
+            self.DIfilteredDATA = [row for row in self.polarised_data if row[self.di_column] >= self.di_threshold]
+        else:  # Filter within an interval
+            self.DIfilteredDATA = [row for row in self.polarised_data if self.di_threshold[0] <= row[self.di_column] <= self.di_threshold[1]]
+
+        # Extract relevant data after filtering
+        self.DIfilteredGenomes = StringTranspose([row[2] for row in self.DIfilteredDATA])
+        self.DIfilteredHIs = [pHetErrOnString(genome) for genome in self.DIfilteredGenomes]
+        self.DIfilteredBED = [row[:2] for row in self.DIfilteredDATA]
+        self.DIpercent = round(100 * len(self.DIfilteredDATA) / len(self.polarised_data))
+        self.DIfilteredScafRLEs = RichRLE([row[0] for row in self.DIfilteredBED])
+
+    def diem_dithering(self):
+        """ Perform dithering on the filtered data """
+        diem_dit_genomes_bed = [list(group) for _, group in groupby(self.DIfilteredBED, key=lambda x: x[0])]
+        processed_diemDITgenomes = []
+        for chr in diem_dit_genomes_bed:
+            length_data = [row[1] for row in chr]
+            split_lengths = self.GappedQuotientSplitLengths(length_data, self.phys_res)
+            processed_diemDITgenomes.append(split_lengths)
+        processed_diemDITgenomes = Flatten(processed_diemDITgenomes)
+        diemDITgenomes = []
+        for genome in self.DIfilteredGenomes:
+            string_take_result = StringTakeList(genome, processed_diemDITgenomes)
+            state_count = Map(sStateCount, string_take_result)
+            combined = list(zip(state_count, processed_diemDITgenomes))
+            # transposed = Transpose([state_count, processed_diemDITgenomes])
+            compressed = self.DITcompress(combined)
+            lengths = self.Lengths2StartEnds(compressed)
+            diemDITgenomes.append(lengths)
+
+        self.diemDITgenomes = diemDITgenomes
 
 
+    def generate_plot_label(self, plot_theme):
+        """ Generate the label for the plot """
+        self.diemPlotLabel = f"{plot_theme} @ DI = {self.di_threshold}: {len(self.DIfilteredGenomes)} sites ({self.DIpercent}%)."
+
+    @staticmethod
+    def GappedQuotientSplit(lst, Q):
+        """
+        Splits the list `lst` into sublists where consecutive elements share the same quotient when divided by `Q`.
+        """
+        quotients = [x // Q for x in lst]
+
+        groups = []
+        current_group = [lst[0]]
+
+        for i in range(1, len(lst)):
+            if quotients[i] == quotients[i - 1]:
+                current_group.append(lst[i])
+            else:
+                groups.append(current_group)
+                current_group = [lst[i]]
+
+        groups.append(current_group)
+        return groups
+
+    def GappedQuotientSplitLengths(self, lst, Q):
+        """
+        Returns the lengths of the sublists produced by `gapped_quotient_split`.
+        """
+        return Map(len, self.GappedQuotientSplit(lst, Q))
+
+    @staticmethod
+    def normalize_4list(lst):
+        """
+        Normalizes a 4list by converting each element to its ratio of the total sum.
+        Uses Fraction for precise comparison without floating-point errors.
+        """
+        total = sum(lst)
+        if total == 0:
+            return tuple(0 for _ in lst)  # Handle case where total is 0
+        return tuple(Fraction(x, total) for x in lst)
+
+    def DITcompress(self, DITl):
+        """
+        Compresses the list of {4list, length} tuples.
+        """
+        grouped_data = [list(group) for _, group in groupby(DITl, key=lambda x: self.normalize_4list(x[0]))]
+        final_data = []
+        for group in grouped_data:
+            summed_states = [sum(x) for x in zip(*(item[0] for item in group))]
+            summed_value = sum(item[1] for item in group)
+            result = (summed_states, summed_value)
+            final_data.append(result)
+        return final_data
+
+    @staticmethod
+    def Lengths2StartEnds(stateNlen):
+        lengths = [x[1] for x in stateNlen]
+        ends = np.cumsum(lengths)
+
+        # Calculate the start positions (end positions minus length plus 1)
+        starts = ends - np.array(lengths) + 1
+
+        # Combine states, starts, and ends into a list of triplets
+        result = [(state, int(start), int(end)) for (state, start, end) in zip([x[0] for x in stateNlen], starts, ends)]
+
+        return result
+
+
+# MB to ticks:
 def chr_mb_ticks(sgl, offset=0, delta=10**6):
     if isinstance(sgl[0], tuple):
         Mb = [x[1] for x in sgl]
@@ -81,145 +210,43 @@ def mb2_ticks(gl):
     return mb_ticks(gl, delta=2 * 10**6)
 
 
-def append_new_column(polarisation_data, COMPdummyBEDfiles):
-    modified_data = []
-    for i in range(len(polarisation_data)):
-        polarisation_array = polarisation_data[i]
-        comp_column = np.array(COMPdummyBEDfiles[i])[:, np.newaxis]
-        new_array = np.hstack((polarisation_array, comp_column))
-        modified_data.append(new_array)
+def chr_kb_ticks(sgl, offset=0, delta=10**5):
+    if isinstance(sgl[0], tuple):
+        Kb = [x[1] for x in sgl]
+    else:
+        Kb = sgl
+        Kb = np.array(Kb).astype(int)
+    sites = offset + np.arange(1, len(sgl) + 1)
+    Kbticks = np.arange(np.ceil(min(Kb) / delta), np.floor(max(Kb) / delta) + 1)
+    Kb_sites_pairs = np.column_stack((Kb, sites))
+    Kb_sites_pairs = Kb_sites_pairs[np.lexsort((Kb_sites_pairs[:, 1],))]
+    interp_func = interp1d(
+        Kb_sites_pairs[:, 0], Kb_sites_pairs[:, 1],
+        kind='linear', bounds_error=False, fill_value="extrapolate"
+    )
+    tick_positions = np.round(interp_func(Kbticks * delta)).astype(int)
+    tick_values = Kbticks * delta / 10 ** 3  # Convert to kilobases (kb)
 
-    return modified_data
-
-def filter_by_threshold(polarisation_data, threshold):
-    filtered_data = []
-    for array in polarisation_data:
-        # Convert the second column to float and filter based on the threshold
-        column_to_filter = array[:, 1].astype(float)
-        filtered_array = array[column_to_filter > threshold]
-        filtered_data.append(filtered_array)
-    return filtered_data
-
-def transpose_data(polarisation_data):
-    processed_data = []
-    for array in polarisation_data:
-        columns_of_interest = array[:, [-1, -2]]
-        transposed_array = columns_of_interest.T
-        processed_data.append(transposed_array)
-    return processed_data
+    return np.column_stack((tick_values, tick_positions))
 
 
-def BrenthisDiagnosticSiteData(BrenthisPolarisedCompartment, COMPdummyBEDfiles, BrenthisNaturalThreshold=None):
-    # Add BED file information
-    added_bed = append_new_column(BrenthisPolarisedCompartment, COMPdummyBEDfiles)
-    # Filter by Threshold
-    filtered_data = filter_by_threshold(added_bed, BrenthisNaturalThreshold)
-    # Only choose columns of interest
-    transposed = transpose_data(filtered_data)
-    return transposed
+def kb_ticks(gl, delta=10 ** 3):
+    chrgl = [list(group) for _, group in pd.groupby(gl, key=lambda x: x[0])]
+    lengths = [len(c) for c in chrgl]
+    offsets = np.concatenate(([0], np.cumsum(lengths)[:-1]))
+    ticks = [chr_kb_ticks(chrgl[i], offset=offsets[i], delta=delta) for i in range(len(chrgl))]
+    return ticks
 
 
-def diem_singleton_replace(s):
-    replacement_rules = {
-    "__U__": "_____",
-    "__0__": "_____",
-    "__1__": "_____",
-    "__2__": "_____",
-    "UU_UU": "UUUUU",
-    "UU0UU": "UUUUU",
-    "UU1UU": "UUUUU",
-    "UU2UU": "UUUUU",
-    "00_00": "00000",
-    "00U00": "00000",
-    "00100": "00000",
-    "00200": "00000",
-    "11_11": "11111",
-    "11U11": "11111",
-    "11011": "11111",
-    "11211": "11111",
-    "22_22": "22222",
-    "22U22": "22222",
-    "22022": "22222",
-    "22122": "22222"
-}
-    for old, new in replacement_rules.items():
-        s = s.replace(old, new)
-    return s
+def kb1_ticks(gl):
+    return kb_ticks(gl, delta=10 ** 3)
 
 
-def transform_strings(array_list):
-    transformed_arrays = []
-
-    for array in array_list:
-        string_list = array.tolist()
-        trimmed_list = [s[1:] for s in string_list]
-        num_chars = len(trimmed_list[0])
-        columns = ['' for _ in range(num_chars)]
-        for string in trimmed_list:
-            for i, char in enumerate(string):
-                columns[i] += char
-        transformed_arrays.append(np.array(columns))
-
-    return transformed_arrays
+def kb2_ticks(gl):
+    return kb_ticks(gl, delta=2 * 10 ** 3)
 
 
-def apply_replacement_to_list(list_of_lists):
-    result = []
-    for sublist in list_of_lists:
-        transformed_sublist = [diem_singleton_replace(s) for s in sublist]
-        result.append(transformed_sublist)
-    return result
-
-
-def BrenthisDiemPlotData(BrenthisDiagnosticSiteData_res):
-    site_strings = [sublist[1] for sublist in BrenthisDiagnosticSiteData_res]
-    individual = [StringTranspose(sublist) for sublist in site_strings]
-    without_s = [sublist[1:] for sublist in individual]
-    replace_individual = apply_replacement_to_list(without_s)
-    return replace_individual
-
-
-def sum_corresponding_lists(state_count_lists):
-    num_lists = len(state_count_lists[0])
-    # Initialize cumulative sums with zeros
-    cumulative_sums = [np.zeros_like(state_count_lists[0][0]) for _ in range(num_lists)]
-
-    # Iterate through each compartment
-    for comp in state_count_lists:
-        for i, arr in enumerate(comp):
-            cumulative_sums[i] += arr
-    return cumulative_sums
-
-
-def BrenthisDiemPlotDataHIs(BrenthisDiemPlotData_res):
-    for_all_comps = []
-    for comp in BrenthisDiemPlotData_res:
-        resultie = Map(csStateCount, comp)
-        for_all_comps.append(resultie)
-
-    final_sum = sum_corresponding_lists(for_all_comps)
-
-    his = []
-    for indie in final_sum:
-        his.append(pHetErrOnStateCount(indie)[0])
-        # print(pHetErrOnStateCount(indie)[0])
-
-    return his
-
-
-def BrenthisDiemPlotDataHIs_order(BrenthisDiemPlotDataHIs_res, BrenthisDiemPlotData_res, dummyBrenthisNames):
-    his_values = BrenthisDiemPlotDataHIs_res
-    sorted_indices = sorted(range(len(his_values)), key=lambda i: his_values[i])
-    BrenthisSortedNames = [dummyBrenthisNames[i] for i in sorted_indices]
-
-    final_sorted_data = []
-    for comp in BrenthisDiemPlotData_res:
-        sorted_diem_data = [comp[i] for i in sorted_indices]
-        final_sorted_data.append(sorted_diem_data)
-
-    return (final_sorted_data, BrenthisSortedNames)
-
-
+# DiemRectangleDiagram
 diemColours = [
     'white',
     mcolors.to_hex((128/255, 0, 128/255)),  # RGBColor[128/255, 0, 128/255] - Purple
@@ -235,7 +262,7 @@ char_to_index = {
 }
 
 
-def rectangular_graph(chromosome_data, index, names_list, bed_data, path=None):
+def diemUnitPlot(chromosome_data, index, names_list, bed_data, path=None):
     print(f'Preparing graph data for index: {index}')
     cmap = mcolors.ListedColormap(diemColours)
     grids = []
@@ -244,173 +271,32 @@ def rectangular_graph(chromosome_data, index, names_list, bed_data, path=None):
         current_indie = chromosome_data[i]
         char_array = np.array([current_indie])
         index_array = [char_to_index.get(char) for char in char_array[0]]
-        grid_array = np.tile(index_array, (1000, 1))
+        grid_array = np.tile(index_array, (10, 1))
         grids.append(grid_array)
         grid_heights.append(grid_array.shape[0])
     combined_grid = np.vstack(grids)
-    x_ticks = chr_mb_ticks(bed_data).astype(int)
+    bed_data = bed_data.astype(str)
+    x_ticks = chr_kb_ticks(bed_data).astype(int)
     x_ticks_positions = x_ticks[:, 1]
     x_ticks_labels = x_ticks[:, 0]
     y_ticks_positions = np.cumsum([0] + grid_heights[:-1])
     y_tick_labels = names_list
+    plt.figure(figsize=(15, 8))
     plt.imshow(combined_grid, cmap=cmap)
-    plt.title(f"chromosome_{index}")
-    plt.yticks(ticks=y_ticks_positions, labels=y_tick_labels, fontsize=6)
+    plt.title(f"scaffold_{index}")
+    plt.yticks(ticks=y_ticks_positions, labels=y_tick_labels, fontsize=8)
+    plt.gca().set_yticks(y_ticks_positions)
+    plt.gca().set_yticklabels(y_tick_labels, fontsize=8)
     plt.xticks(ticks=x_ticks_positions, labels=x_ticks_labels)
+    plt.draw()
     if path:
-        plt.savefig(f'{path}/chromosome_{index}.png', format='png', dpi=300)
+        plt.savefig(f'{path}/scaffold_{index}.png', format='png', dpi=500)
     else:
-        plt.savefig(f'chromosome_{index}.png', format='png', dpi=300)
+        plt.savefig(f'scaffold_{index}.png', format='png', dpi=500)
     # plt.show()
 
 
-def rectangular_graph_for_all_chromosome(chromosome_data_list, names_list, bed_data_list, path=None):
-    for index, chromosome_data in enumerate(chromosome_data_list):
-        index = index
-        bed_data = bed_data_list[index]
-        print(f'Preparing graph data for index: {index}')
-        cmap = mcolors.ListedColormap(diemColours)
-        grids = []
-        grid_heights = []
-        for i in range(len(chromosome_data)):
-            current_indie = chromosome_data[i]
-            char_array = np.array([current_indie])
-            index_array = [char_to_index.get(char) for char in char_array[0]]
-            grid_array = np.tile(index_array, (1000, 1))
-            grids.append(grid_array)
-            grid_heights.append(grid_array.shape[0])
-        combined_grid = np.vstack(grids)
-        x_ticks = chr_mb_ticks(bed_data).astype(int)
-        x_ticks_positions = x_ticks[:, 1]
-        x_ticks_labels = x_ticks[:, 0]
-        y_ticks_positions = np.cumsum([0] + grid_heights[:-1])
-        y_tick_labels = names_list
-        plt.imshow(combined_grid, cmap=cmap)
-        plt.title(f"chromosome_{index}")
-        plt.yticks(ticks=y_ticks_positions, labels=y_tick_labels, fontsize=6)
-        plt.xticks(ticks=x_ticks_positions, labels=x_ticks_labels)
-        if path:
-            plt.savefig(f'{path}/chromosome_{index}.png', format='png', dpi=300)
-        else:
-            plt.savefig(f'chromosome_{index}.png', format='png', dpi=300)
-        # plt.show()
-
-#
-# def circular_graph(chromosome_data_list, names_list, bed_data_list, path=None):
-#     index = 0
-#     bed_data = bed_data_list[index]
-#     print(f'Preparing graph data for index: {index}')
-#
-#     # Set up color map
-#     cmap = mcolors.ListedColormap(diemColours)
-#
-#     # Prepare grids and their heights
-#     grids = []
-#     grid_heights = []
-#     for i in range(len(chromosome_data_list[0])):
-#         current_indie = chromosome_data_list[0][i]
-#         char_array = np.array([current_indie])
-#         index_array = [char_to_index.get(char) for char in char_array[0]]
-#         grid_array = np.tile(index_array, (500, 1)).astype(np.float16)  # Use float32 to reduce memory
-#         grids.append(grid_array)
-#         grid_heights.append(grid_array.shape[0])
-#
-#     # Combine grids and ensure data type is float32 or smaller
-#     combined_grid = np.vstack(grids).astype(np.float16)  # or use np.float16 for further reduction
-#
-#     # Prepare polar coordinates for the circular graph
-#     num_rows, num_cols = combined_grid.shape
-#     theta = np.linspace(0, 2 * np.pi, num_cols).astype(np.float16)
-#     r = np.linspace(0, 1, num_rows).astype(np.float16)
-#
-#     # Create meshgrid for polar coordinates
-#     Theta, R = np.meshgrid(theta, r)
-#
-#     fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
-#     ax.pcolormesh(Theta, R, combined_grid, cmap=cmap, shading='auto')
-#
-#     ax.set_title(f"chromosome_{index}")
-#
-#     plt.show()
-#
-#     # Optionally save the figure
-#     if path:
-#         plt.savefig(f'{path}/chromosome_{index}_circular.jpg', format='jpg', dpi=50)
-#     else:
-#         plt.savefig(f'chromosome_{index}_circular.png', format='jpg', dpi=50)
-
-
-# Run Lenght Compression bit:
-
-def TsRishRLEjoin(a, b):
-    # Should be good
-    if a[-1][0] == b[0][0]:
-        return a[:-1] + [[a[-1][0], a[-1][1] + b[0][1], a[-1][2], b[0][3]]] + b[1:]
-    else:
-        return a + b
-
-
-def Last(lst):
-    return lst[-1]
-
-
-def sRichRLEmerger(ls):
-    endofprevious = Drop((Join([0], Accumulate(Map(Last, Map(Last, ls))))), -1)
-    Tls = [
-        list(zip(
-            ls[i][0],  # First column
-            ls[i][1],  # Second column
-            [x + endofprevious[i] for x in ls[i][2]],  # Third column adjusted by endofprevious
-            [x + endofprevious[i] for x in ls[i][3]]  # Fourth column adjusted by endofprevious
-        ))
-        for i in range(len(ls))]
-
-    merged = Tls[0]
-    for i in range(1, len(Tls)):
-        merged = TsRishRLEjoin(merged, Tls[i])
-    merged_transposed = list(zip(*merged))
-    return merged_transposed
-
-
-def rle_brenthis_plot_data(diem_plot_data):
-    rle_step = []
-    for comp in diem_plot_data:
-        comp_rle = Map(RichRLE, comp)
-        rle_step.append(comp_rle)
-        # [states, lengths, starts, ends]
-    transposed_all = list(map(list, zip(*rle_step)))
-    merged_all = Map(sRichRLEmerger, transposed_all)
-    final_result = Map(BackgroundedRLE, merged_all)
-    return final_result
-
-
-def flatten1(lst):
-    return [item for sublist in lst for item in sublist]
-
-
-def rle_brenthis_diem_plot_bed(BrenthisDiemPlotBED):
-    flattened_bed = flatten1(BrenthisDiemPlotBED)
-    first_elements = [x for x in flattened_bed]
-    rle_result = RLE(first_elements)
-    rle_transposed = np.array(rle_result).T
-    lengths_list = [len(arr) for arr in BrenthisDiemPlotBED]
-    split_indices = np.cumsum(lengths_list[:-1])
-    split_arrays = np.split(rle_transposed, split_indices)
-    return split_arrays
-
-
-def rle_brenthis_sorted(BrenthisDiemPlotDataHIs_res, rleBrenthisPlotData_res):
-    his_values = BrenthisDiemPlotDataHIs_res
-    sorted_indices = sorted(range(len(his_values)), key=lambda i: his_values[i])
-    final_sorted_data = [rleBrenthisPlotData_res[i] for i in sorted_indices]
-
-    return final_sorted_data
-
-
-from matplotlib.patches import Wedge
-import matplotlib.colors as mcolors
-
-
+# DiemIrisPlot
 class WheelDiagram:
     def __init__(self, subplot, center, radius, number_of_rings, cutout_angle=13):
         self.subplot = subplot
@@ -430,27 +316,49 @@ class WheelDiagram:
         available_angle = 360 - self.cutout_angle
         angle_scale = available_angle / list_of_thingies[-1][-1]
         color_map = {
-            "_": "white",
-            "U": "white",
-            "0": mcolors.to_hex((128 / 255, 0, 128 / 255)),
-            "1": mcolors.to_hex((255 / 255, 229 / 255, 0)),
-            "2": mcolors.to_hex((0, 128 / 255, 128 / 255))
+            "white": (1.0, 1.0, 1.0),  # White
+            "purple": (128 / 255, 0, 128 / 255),  # Purple
+            "yellow": (255 / 255, 229 / 255, 0),  # Yellow
+            "teal": (0, 128 / 255, 128 / 255),  # Teal
         }
+        colors = np.array(list(color_map.values()))
         ring_radius = self.radius - self.rings_added * (self.radius - self.center_radius) / self.number_of_rings
 
         start_angle_offset = 90
         for index, thing in enumerate(list_of_thingies):
+            weights = np.array(thing[0])
+            total_weight = np.sum(weights)
+            if total_weight == 0:
+                blended_rgb = (0, 0, 0)
+            else:
+                blended_rgb = np.sum(colors.T * weights, axis=1) / total_weight
+            blended_hex = mcolors.to_hex(blended_rgb)
             from_angle = start_angle_offset + 360 - (angle_scale * (thing[1] - 1))
             to_angle = start_angle_offset + 360 - (angle_scale * thing[2])
-            self.add_wedge(ring_radius, to_angle,from_angle, color_map[thing[0]])
+            self.add_wedge(ring_radius, to_angle,from_angle, blended_hex)
 
         self.rings_added += 1
+
+    def add_heatmap_ring(self, heatmap):
+        available_angle = 360 - self.cutout_angle
+        angle_scale = available_angle / int(heatmap[-1][-1])
+        keys = ["barr", "int", "ovm"]
+        values = ["Red", "Blue", "Yellow"]
+        color_map = dict(zip(keys, values))
+
+        ring_radius = self.radius + 2 * (self.radius - self.center_radius) / self.number_of_rings
+
+        start_angle_offset = 90
+        for index, thing in enumerate(heatmap):
+            from_angle = start_angle_offset + 360 - (angle_scale * (int(thing[1]) - 1))
+            to_angle = start_angle_offset + 360 - (angle_scale * int(thing[2]))
+            self.add_wedge(ring_radius, to_angle, from_angle, color_map[thing[0]])
 
     def clear_center(self):
         self.add_wedge(self.center_radius, 0, 360, "white")
 
 
-def ring_rle(input_data, path, names=None, pdf=None, png=None, bed_info=None, length_of_chromosomes=None):
+def diemIrisPlot(input_data, path, names=None, pdf=None, png=None, bed_info=None, length_of_chromosomes=None, heatmap=None):
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111)
     ax.axis('off')
@@ -458,16 +366,20 @@ def ring_rle(input_data, path, names=None, pdf=None, png=None, bed_info=None, le
     center = (.5, .5)
     radius = 0.5
     number_of_rings = len(input_data)
-    cutout_angle = 14
-
-    wd = WheelDiagram(ax, center, radius, number_of_rings, cutout_angle=cutout_angle)
+    cutout_angle = 20
+    if heatmap is not None:
+        wd = WheelDiagram(ax, center, radius, number_of_rings+1, cutout_angle=cutout_angle)
+    else:
+        wd = WheelDiagram(ax, center, radius, number_of_rings, cutout_angle=cutout_angle)
+    if heatmap is not None:
+        wd.add_heatmap_ring(heatmap)
     for ring in input_data:
         wd.add_ring(ring)
     wd.clear_center()
 
-    outer_radius = radius + 0.01  # Adjust this for better label distance
     available_angle = 360 - cutout_angle
     start_angle_offset = 90
+    outer_radius = radius + 0.01
 
     if length_of_chromosomes:
         max_position = input_data[0][-1][2]
@@ -507,11 +419,16 @@ def ring_rle(input_data, path, names=None, pdf=None, png=None, bed_info=None, le
             label_y = center[1] + (outer_radius - 0.3) * np.sin(midpoint_angle_rad)
 
             # Place the label
-            ax.text(label_x, label_y, str(label), ha='center', va='center', fontsize=6)
+            angle_deg = np.degrees(midpoint_angle_rad)
+            ax.text(label_x, label_y, str(label), ha='center', va='center', fontsize=8, rotation=angle_deg, rotation_mode='anchor')
 
     # The outer ticks
     if bed_info is not None:
         # Maximum position for scaling
+        if heatmap is not None:
+            outer_radius_new = radius + 0.035
+        else:
+            outer_radius_new = outer_radius
         max_position = input_data[0][-1][2]
         for chrom, positions in bed_info.items():
             label_counter = 1  # Initialize a counter
@@ -519,25 +436,25 @@ def ring_rle(input_data, path, names=None, pdf=None, png=None, bed_info=None, le
                 angle = start_angle_offset + 360 - (available_angle * position / max_position)
                 angle_rad = np.radians(angle)
 
-                x = center[0] + outer_radius * np.cos(angle_rad)
-                y = center[1] + outer_radius * np.sin(angle_rad)
+                x = center[0] + outer_radius_new * np.cos(angle_rad)
+                y = center[1] + outer_radius_new * np.sin(angle_rad)
 
-                if label_counter % 2 == 0:
-                    label_distance = 0.005
-                    label_x = x + label_distance * np.cos(angle_rad)
-                    label_y = y + label_distance * np.sin(angle_rad)
+                # if label_counter % 2 == 0:
+                label_distance = 0.005
+                label_x = x + label_distance * np.cos(angle_rad)
+                label_y = y + label_distance * np.sin(angle_rad)
 
-                    ax.text(label_x, label_y, str(label), ha='center', va='bottom', fontsize=6, rotation=angle - 90,
-                            rotation_mode='anchor')
+                ax.text(label_x, label_y, str(label), ha='center', va='bottom', fontsize=6, rotation=angle - 90,
+                        rotation_mode='anchor')
 
-                    inward_offset = 0.01
-                    line_start_x = x - inward_offset * np.cos(angle_rad)
-                    line_start_y = y - inward_offset * np.sin(angle_rad)
+                inward_offset = 0.01
+                line_start_x = x - inward_offset * np.cos(angle_rad)
+                line_start_y = y - inward_offset * np.sin(angle_rad)
 
-                    line_length = 0.01
-                    ax.plot([line_start_x, line_start_x + line_length * np.cos(angle_rad)],
-                            [line_start_y, line_start_y + line_length * np.sin(angle_rad)],
-                            color='black', linewidth=0.5)  # Draw the line
+                line_length = 0.01
+                ax.plot([line_start_x, line_start_x + line_length * np.cos(angle_rad)],
+                        [line_start_y, line_start_y + line_length * np.sin(angle_rad)],
+                        color='black', linewidth=0.5)  # Draw the line
 
                 label_counter += 1
 
@@ -550,7 +467,7 @@ def ring_rle(input_data, path, names=None, pdf=None, png=None, bed_info=None, le
             angle_rad = np.radians(label_angle)
             label_x = center[0] + ring_radius * np.cos(angle_rad)
             label_y = center[1] + ring_radius * np.sin(angle_rad)
-            ax.text(label_x, label_y, name, ha='right', va='center', fontsize=10, rotation=label_angle - 90,
+            ax.text(label_x, label_y, name, ha='right', va='center', fontsize=6, rotation=label_angle - 90,
                     rotation_mode='anchor')
 
     # Save the output files
@@ -561,18 +478,5 @@ def ring_rle(input_data, path, names=None, pdf=None, png=None, bed_info=None, le
 
     if not pdf and not png:
         plt.show()  # Display the plot if desired
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
