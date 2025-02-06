@@ -7,7 +7,7 @@ from matplotlib.patches import Wedge
 import matplotlib.colors as mcolors
 from scipy.interpolate import interp1d
 
-from carpePy.diem_helper_functions import *
+from carpepy.diem_helper_functions import *
 from .mathematica2python import *
 
 
@@ -40,13 +40,14 @@ def AnnotatedHITally(markers):
 
 # DiemPlotPrep Class
 class DiemPlotPrep:
-    def __init__(self, plot_theme, ind_ids, polarised_data, di_threshold, di_column, phys_res):
+    def __init__(self, plot_theme, ind_ids, polarised_data, di_threshold, di_column, phys_res, ticks=None):
         self.polarised_data = polarised_data
         self.di_threshold = di_threshold
         self.di_column = di_column
         self.phys_res = phys_res
         self.plot_theme = plot_theme
         self.ind_ids = ind_ids
+        self.ticks = ticks
 
         self.diemPlotLabel = None
         self.DIfilteredDATA = None
@@ -56,8 +57,16 @@ class DiemPlotPrep:
         self.DIpercent = None
         self.DIfilteredScafRLEs = None
         self.diemDITgenomes = None
+        self.DIfilteredBED_formatted = None
+        self.IndIDs_ordered = None
+        self.unit_plot_prep = []
+        self.plot_ordered = None
+        self.length_of_chromosomes = {}
+        self.iris_plot_prep = {}
+        self.diemDITgenomes_ordered = None
 
         self.diem_plot_prep()
+        self.format_bed_data()
 
     def diem_plot_prep(self):
         """ Perform DI filtering, dithering, and label generation """
@@ -66,6 +75,57 @@ class DiemPlotPrep:
         self.diem_dithering()
 
         self.generate_plot_label(self.plot_theme)
+
+    def format_bed_data(self):
+        grouped = {}
+        for item in self.DIfilteredBED:
+            key, value = item
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(value)
+
+        self.DIfilteredBED_formatted = [np.array(values) for values in grouped.values()]
+
+        self.plot_ordered = self.DIfilteredHIs
+        for a, b in enumerate(self.plot_ordered):
+            self.plot_ordered[a] = (float(b[0]), a + 1)
+        self.plot_ordered = sorted(self.plot_ordered, key=lambda x: x[0])
+        # sort the names according to the HIs
+        sorted_indices = [index - 1 for _, index in self.plot_ordered]
+        # Reorder the names using the sorted indices
+        self.IndIDs_ordered = [self.ind_ids[i] for i in sorted_indices]
+
+        start_position = 0
+        for bed_data in self.DIfilteredBED_formatted:
+            sublist = []
+            end_position = start_position + len(bed_data)
+            for genome in self.DIfilteredGenomes:
+                sublist.append(genome[start_position:end_position])
+            sorted_sublist = [sublist[idx] for idx in sorted_indices]
+            self.unit_plot_prep.append(sorted_sublist)
+            start_position = end_position
+
+        start = 0
+
+        for index, value in enumerate(self.DIfilteredBED_formatted):
+            end = start + len(value)  # Current value is the ending point
+            length = len(value)  # Calculate the length
+            self.length_of_chromosomes[list(grouped.keys())[index]] = [start, end, length]  # Create the dictionary entry
+            start = end  # Update the starting point for the next iteration
+
+        for index, bed in enumerate(self.DIfilteredBED_formatted):
+            if self.ticks in ['kb', 'KB', 'Kb']:
+                x_ticks = chr_kb_ticks(bed).astype(int)
+            else:
+                x_ticks = chr_mb_ticks(bed).astype(int)
+            new_ticks = np.zeros_like(x_ticks)
+            starting_point = self.length_of_chromosomes[list(grouped.keys())[index]][0]
+            for i, item in enumerate(x_ticks):
+                new_value = item[1] + starting_point
+                new_ticks[i] = [item[0], new_value]  # Populate new_ticks with adjusted values
+            # Update the starting point
+            self.iris_plot_prep[index + 1] = new_ticks
+        self.diemDITgenomes_ordered = [self.diemDITgenomes[i] for i in sorted_indices]
 
     def filter_data(self):
         """ Apply DI threshold filtering on the data """
@@ -256,7 +316,7 @@ char_to_index = {
 }
 
 
-def diemUnitPlot(chromosome_data, index, names_list, bed_data, path=None):
+def diemUnitPlot(chromosome_data, index, names_list, bed_data, path=None, ticks=None):
     print(f'Preparing graph data for index: {index}')
     cmap = mcolors.ListedColormap(diemColours)
     grids = []
@@ -270,7 +330,10 @@ def diemUnitPlot(chromosome_data, index, names_list, bed_data, path=None):
         grid_heights.append(grid_array.shape[0])
     combined_grid = np.vstack(grids)
     bed_data = bed_data.astype(str)
-    x_ticks = chr_kb_ticks(bed_data).astype(int)
+    if ticks == 'kb':
+        x_ticks = chr_kb_ticks(bed_data).astype(int)
+    else:
+        x_ticks = chr_mb_ticks(bed_data).astype(int)
     x_ticks_positions = x_ticks[:, 1]
     x_ticks_labels = x_ticks[:, 0]
     y_ticks_positions = np.cumsum([0] + grid_heights[:-1])
@@ -352,7 +415,7 @@ class WheelDiagram:
         self.add_wedge(self.center_radius, 0, 360, "white")
 
 
-def diemIrisPlot(input_data, path, names=None, pdf=None, png=None, bed_info=None, length_of_chromosomes=None, heatmap=None):
+def diemIrisPlot(input_data, path, names=None, pdf=None, png=None, bed_info=None, length_of_chromosomes=None, heatmap=None, ticks=None):
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111)
     ax.axis('off')
