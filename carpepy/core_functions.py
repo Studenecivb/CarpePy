@@ -1,14 +1,18 @@
+from __future__ import annotations
+
 import pandas as pd
 import matplotlib.pyplot as plt
 from itertools import groupby
 from fractions import Fraction
+import numpy as np
 
 from matplotlib.patches import Wedge
-import matplotlib.colors as mcolors
 from scipy.interpolate import interp1d
+import matplotlib.colors as mcolors
+from collections import Counter
 
-from carpepy.diem_helper_functions import *
-from .mathematica2python import *
+from .mathematica2python import StringTranspose, RichRLE, Flatten, StringTakeList, Map
+from .diem_helper_functions import StringReplace20, pHetErrOnString, sStateCount
 
 
 # Polarise and Join
@@ -66,7 +70,6 @@ class DiemPlotPrep:
         self.diemDITgenomes_ordered = None
 
         self.diem_plot_prep()
-        self.format_bed_data()
 
     def diem_plot_prep(self):
         """ Perform DI filtering, dithering, and label generation """
