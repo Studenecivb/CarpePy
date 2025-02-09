@@ -7,21 +7,27 @@ library(reticulate)
 virtualenv_create("r-reticulate")
 use_virtualenv("r-reticulate", required = TRUE)
 
+
 # Install carpepy and load it
 py_install("carpepy")
 carpepy <- import("carpepy")
 
-# This example is running a python code fully, this is not necessary, it is possible to load the data
+# This example is running a pre-processing with python code only, this is not necessary, it is possible to load the data
 # and formatting it yourself in R and then running the functions from Python. For more information on how
 # to do this please read the reticulate documentation: https://rstudio.github.io/reticulate/articles/package.html
 # And to see how the input data of the particular carpepy functions should look, please checkout the manual.
-# This example shows Pneumocystis processing from the article: ADD
+
+# This example shows Pneumocystis processing from the article: 
+# Jan Petružela, Beate Nürnberger, Alexis Ribas, et al. 
+# Comparative genomic analysis of co-occurring hybrid zones of house mouse parasites Pneumocystis murina and 
+# Syphacia obvelata using genome polarisation. Authorea. January 31, 2025.
+
 
 # Read the CSV file into Python
 py_run_string("import pandas as pd")
 py_run_string("from carpepy import DiemPlotPrep, diemUnitPlot, diemIrisPlot, RichRLE")
 py_run_string("import numpy as np")
-py_run_string("HonzaPneumo_df = pd.read_csv('your_input_data.csv', sep=',')")
+py_run_string("HonzaPneumo_df = pd.read_csv('input_file.csv', sep=',')")
 
 # Now we do a few steps of formatting the input data to match the format described in the manual:
 py_run_string('
@@ -47,22 +53,23 @@ HonzaPneumoPolariseNjoin = [list(row) + [marker] for row, marker in zip(HonzaPne
 ')
 
 # Run diemplotpre, here we are not filtering by diagnostic index
-py_run_string("
-plot_theme = 'Pneumocystis'
+plot_theme <- 'Pneumocystis'
+HonzaPneumoPolariseNjoin <- py$HonzaPneumoPolariseNjoin
+HonzaPneumoIndIDs <- py$HonzaPneumoIndIDs
 
-PneumoPlotPrep = DiemPlotPrep(
-    plot_theme='Pneumocystis',
-    polarised_data=HonzaPneumoPolariseNjoin,
-    ind_ids=HonzaPneumoIndIDs,
-    di_threshold='NO DI FILTER',
-    di_column=5,
-    phys_res=1,
-    ticks='kb'
+PneumoPlotPrep <- carpepy$DiemPlotPrep(
+  plot_theme='Pneumocystis',
+  polarised_data=HonzaPneumoPolariseNjoin,
+  ind_ids=HonzaPneumoIndIDs,
+  di_threshold='NO DI FILTER',
+  di_column=5,
+  phys_res=1,
+  ticks='kb'
 )
 
-PneumoPlotPrep.format_bed_data()
-")
+PneumoPlotPrep$format_bed_data()
 
+py$PneumoPlotPrep <- PneumoPlotPrep
 
 # Run the unit plots for each chromosome
 py_run_string("
@@ -81,14 +88,18 @@ for i in range(min(len(PneumoPlotPrep.unit_plot_prep), len(PneumoPlotPrep.DIfilt
 py_run_string("
 heatmap_pre_values = list(HonzaPneumo_df.iloc[:, -4])
 rle_heatmap_values = np.array(RichRLE(heatmap_pre_values)).T
-heatmap_map = np.delete(rle_heatmap_values, 1, axis=1)
+heatmap_map = np.delete(rle_heatmap_values, 1, axis=1)")
 
-diemIrisPlot(PneumoPlotPrep.diemDITgenomes_ordered, names=PneumoPlotPrep.IndIDs_ordered,
-         bed_info=PneumoPlotPrep.iris_plot_prep,
-         length_of_chromosomes=PneumoPlotPrep.length_of_chromosomes,
-         heatmap=heatmap_map,
-         path='your_output_path',
-         png='cute_iris_lot')")
+carpepy$diemIrisPlot(
+  PneumoPlotPrep$diemDITgenomes_ordered, 
+  names = PneumoPlotPrep$IndIDs_ordered,
+  bed_info = PneumoPlotPrep$iris_plot_prep,
+  length_of_chromosomes = PneumoPlotPrep$length_of_chromosomes,
+  heatmap = py$heatmap_map,
+  path = "your_output_path",
+  png = "cute_iris_plot"
+)
+
 
 
 
