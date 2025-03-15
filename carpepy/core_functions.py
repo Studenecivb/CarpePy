@@ -9,11 +9,16 @@ import numpy as np
 from matplotlib.patches import Wedge
 from scipy.interpolate import interp1d
 import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
 from collections import Counter
+import seaborn as sns
 
 from .mathematica2python import StringTranspose, RichRLE, Flatten, StringTakeList, Map
 from .diem_helper_functions import StringReplace20, pHetErrOnString, sStateCount
+from .kernel_smoothing import n_laplace_smooth_one_haplotype
 
+import matplotlib
+matplotlib.use('Agg')
 
 # Polarise and Join
 def polarise_n_join(polarisation_data, s_data):
@@ -44,7 +49,7 @@ def AnnotatedHITally(markers):
 
 # DiemPlotPrep Class
 class DiemPlotPrep:
-    def __init__(self, plot_theme, ind_ids, polarised_data, di_threshold, di_column, phys_res, ticks=None):
+    def __init__(self, plot_theme, ind_ids, polarised_data, di_threshold, di_column, phys_res, ticks=None, smooth=None):
         self.polarised_data = polarised_data
         self.di_threshold = di_threshold
         self.di_column = di_column
@@ -52,6 +57,7 @@ class DiemPlotPrep:
         self.plot_theme = plot_theme
         self.ind_ids = ind_ids
         self.ticks = ticks
+        self.smooth = smooth
 
         self.diemPlotLabel = None
         self.DIfilteredDATA = None
@@ -61,6 +67,7 @@ class DiemPlotPrep:
         self.DIpercent = None
         self.DIfilteredScafRLEs = None
         self.diemDITgenomes = None
+        self.DIfilteredGenomes_unsmoothed = None
         self.DIfilteredBED_formatted = None
         self.IndIDs_ordered = None
         self.unit_plot_prep = []
@@ -74,7 +81,8 @@ class DiemPlotPrep:
     def diem_plot_prep(self):
         """ Perform DI filtering, dithering, and label generation """
         self.filter_data()
-
+        if self.smooth:
+            self.kernel_smooth(self.smooth)
         self.diem_dithering()
 
         self.generate_plot_label(self.plot_theme)
@@ -125,8 +133,7 @@ class DiemPlotPrep:
             starting_point = self.length_of_chromosomes[list(grouped.keys())[index]][0]
             for i, item in enumerate(x_ticks):
                 new_value = item[1] + starting_point
-                new_ticks[i] = [item[0], new_value]  # Populate new_ticks with adjusted values
-            # Update the starting point
+                new_ticks[i] = [item[0], new_value]
             self.iris_plot_prep[index + 1] = new_ticks
         self.diemDITgenomes_ordered = [self.diemDITgenomes[i] for i in sorted_indices]
 
@@ -145,6 +152,62 @@ class DiemPlotPrep:
         self.DIfilteredBED = [row[:2] for row in self.DIfilteredDATA]
         self.DIpercent = round(100 * len(self.DIfilteredDATA) / len(self.polarised_data))
         self.DIfilteredScafRLEs = RichRLE([row[0] for row in self.DIfilteredBED])
+
+    def kernel_smooth(self, scale):
+        from collections import defaultdict
+        scaffold_indices = defaultdict(list)
+        for idx, entry in enumerate(self.DIfilteredBED):
+            scaffold = entry[0]
+            scaffold_indices[scaffold].append(idx)
+
+        split_genomes = []
+        for genome in self.DIfilteredGenomes:
+            scaffold_dict = {}
+            for scaffold, indices in scaffold_indices.items():
+                scaffold_str = ''.join([genome[i] for i in indices])
+                scaffold_dict[scaffold] = scaffold_str
+            split_genomes.append(scaffold_dict)
+
+        scaffold_positions = defaultdict(list)
+        for entry in self.DIfilteredBED:
+            scaffold = entry[0]  # Scaffold name
+            position = entry[1]  # Position
+            scaffold_positions[scaffold].append(position)
+        scaffold_arrays = {scaffold: np.array(positions) for scaffold, positions in scaffold_positions.items()}
+
+        smoothed_split_genomes = []
+        # going through individuals
+        for idx, genome in enumerate(split_genomes):
+            smoothed_individual_genome = {}
+            for key, value in genome.items():
+                cleaned_string = value.replace("_", "3")
+                integer_list = [int(char) for char in cleaned_string]
+                numpy_array_haplo = np.array(integer_list)
+                smooth_output = n_laplace_smooth_one_haplotype(scaffold_arrays[key], numpy_array_haplo, scale)
+                string_list = [str(x) for x in smooth_output]
+                string_list = ['_' if x == '3' else x for x in string_list]
+                result_string = ''.join(string_list)
+                smoothed_individual_genome[key] = result_string
+            smoothed_split_genomes.append(smoothed_individual_genome)
+        self.DIfilteredGenomes_unsmoothed = self.DIfilteredGenomes
+        self.DIfilteredGenomes = self._reconstruct_genomes(smoothed_split_genomes, scaffold_indices)
+
+    def _reconstruct_genomes(self, smoothed_split_genomes, scaffold_indices):
+        reconstructed_genomes = []
+
+        for individual in smoothed_split_genomes:
+            full_genome = ['0'] * len(self.DIfilteredBED)
+
+            for scaffold, indices in scaffold_indices.items():
+                scaffold_str = individual[scaffold]
+                for i, idx in enumerate(indices):
+                    full_genome[idx] = scaffold_str[i]
+
+            reconstructed_genome = ''.join(full_genome)
+            reconstructed_genomes.append(reconstructed_genome)
+
+        return reconstructed_genomes
+
 
     def diem_dithering(self):
         """ Perform dithering on the filtered data """
@@ -270,9 +333,10 @@ def mb2_ticks(gl):
 def chr_kb_ticks(sgl, offset=0, delta=10**5):
     if isinstance(sgl[0], tuple):
         Kb = [x[1] for x in sgl]
+        Kb = np.array(Kb).astype(float).astype(int)
     else:
         Kb = sgl
-        Kb = np.array(Kb).astype(int)
+        Kb = np.array(Kb).astype(float).astype(int)
     sites = offset + np.arange(1, len(sgl) + 1)
     Kbticks = np.arange(np.ceil(min(Kb) / delta), np.floor(max(Kb) / delta) + 1)
     Kb_sites_pairs = np.column_stack((Kb, sites))
@@ -353,6 +417,7 @@ def diemUnitPlot(chromosome_data, index, names_list, bed_data, path=None, ticks=
         plt.savefig(f'{path}/scaffold_{index}.png', format='png', dpi=500)
     else:
         plt.savefig(f'scaffold_{index}.png', format='png', dpi=500)
+    plt.close()
     # plt.show()
 
 
@@ -373,6 +438,7 @@ class WheelDiagram:
         )
 
     def add_ring(self, list_of_thingies):
+        print(f'Adding ring: {self.rings_added + 1}')
         available_angle = 360 - self.cutout_angle
         angle_scale = available_angle / list_of_thingies[-1][-1]
         color_map = {
@@ -518,7 +584,7 @@ def diemIrisPlot(input_data, path, names=None, pdf=None, png=None, bed_info=None
 
                 label_counter += 1
 
-    # Chromosome names
+    # Individual names
     if names and len(names) == number_of_rings:
         for i, name in enumerate(names):
             ring_radius = radius - (i + 0.5) * (radius - wd.center_radius) / number_of_rings
@@ -532,11 +598,84 @@ def diemIrisPlot(input_data, path, names=None, pdf=None, png=None, bed_info=None
 
     # Save the output files
     if png:
-        plt.savefig(f'{path}/{png}.png', format="png")
+        plt.savefig(f'{path}/{png}.png', format="png", dpi=500)
     if pdf:
-        plt.savefig(f'{path}/{pdf}.pdf', format="pdf")
+        plt.savefig(f'{path}/{pdf}.pdf', format="pdf", dpi=500)
 
     if not pdf and not png:
         plt.show()  # Display the plot if desired
+
+
+# Pairwise distance graph:
+class PWC:
+    def __init__(self, PWCtallyer, PWCweight, input_path, output_path_results, output_path_heatmap, labels):
+        self.PWCtallyer = PWCtallyer
+        self.PWCweight = PWCweight
+        self.input_path = input_path
+        self.output_path_results = output_path_results
+        self.output_path_heatmap = output_path_heatmap
+        self.U012 = "_012"
+        self.labels = labels
+        self.PWCtallyer = []
+        for i in range(len(self.U012)):
+            for j in range(i, len(self.U012)):
+                PWCtallyer.append(self.ASJ([self.U012[i], self.U012[j]]))
+                if i != j:
+                    PWCtallyer.append(self.ASJ([self.U012[j], self.U012[i]]))
+        self.PWCweight = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 1, 1, 1, 0]
+
+    @staticmethod
+    def SJ(l):
+        return "".join(map(str, l))
+
+    @staticmethod
+    def ASJ(s):
+        return PWC.SJ(s)
+
+
+    def PWCtally(self, l):
+        return [Counter(self.PWCtallyer + l)[k] - 1 for k in self.PWCtallyer]
+
+    def diemDistancePerSite(self, g1, g2):
+        pwct = self.PWCtally(["".join(pair) for pair in zip(g1, g2)])
+        return np.sum(np.array(pwct) * np.array(self.PWCweight)) / np.sum(pwct[7:])
+
+    @staticmethod
+    def CombineRules(ss):
+        rules = {
+            "00": "0",
+            "22": "2",
+            "02": "1",
+            "20": "1"
+        }
+        return rules.get(ss, "_")
+
+    @staticmethod
+    def diemCombineSites(g1, g2):
+        return PWC.ASJ([PWC.CombineRules("".join(pair)) for pair in zip(g1, g2)])
+
+    @staticmethod
+    def diemOffspringDistance(p1, p2, o):
+        return PWC.diemDistancePerSite(PWC.diemCombineSites(p1, p2), o)
+
+    def pwc_graph(self):
+        with open(self.input_path, "r", encoding="utf-8") as f:
+            RawSyphGenomes = f.read()
+        RawSyphGenomes = [s.replace('\n', '') for s in RawSyphGenomes.split("S") if s]
+        PWCheatMap = np.zeros((len(RawSyphGenomes), len(RawSyphGenomes)))
+
+        # Calculate pairwise distances
+        for i in range(len(RawSyphGenomes)):
+            for j in range(len(RawSyphGenomes)):
+                PWCheatMap[i, j] = self.diemDistancePerSite(RawSyphGenomes[i], RawSyphGenomes[j])
+        np.savetxt(self.output_path_results, PWCheatMap, delimiter=",")
+        custom_cmap = LinearSegmentedColormap.from_list("soft_coolwarm", ["#1e90ff", 'white', "#fff266", "#ff1a1a"])
+        plt.figure(figsize=(10, 10))
+        ax = sns.heatmap(PWCheatMap, cmap=custom_cmap, xticklabels=self.labels, yticklabels=self.labels,
+                 cbar_kws={"shrink": 1, "fraction": 0.045, "pad": 0.04})
+        ax.set_aspect('equal', adjustable='box')
+        plt.xticks(rotation=-90)
+        plt.savefig(self.output_path_heatmap, format="png", dpi=500)
+
 
 
