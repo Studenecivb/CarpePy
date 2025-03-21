@@ -99,8 +99,11 @@ class DiemPlotPrep:
 
         self.plot_ordered = self.DIfilteredHIs
         for a, b in enumerate(self.plot_ordered):
-            self.plot_ordered[a] = (float(b[0]), a + 1)
-        self.plot_ordered = sorted(self.plot_ordered, key=lambda x: x[0])
+            try:
+                self.plot_ordered[a] = (float(b[0]), a + 1)
+            except ValueError:
+                self.plot_ordered[a] = (np.nan, a + 1)
+        self.plot_ordered = sorted(self.plot_ordered, key=lambda x: (np.isnan(x[0]), x[0]))
         # sort the names according to the HIs
         sorted_indices = [index - 1 for _, index in self.plot_ordered]
         # Reorder the names using the sorted indices
@@ -489,7 +492,7 @@ def diemIrisPlot(input_data, path, names=None, pdf=None, png=None, bed_info=None
     ax = fig.add_subplot(111)
     ax.axis('off')
     ax.set_aspect('equal')
-    center = (.5, .5)
+    center = (0.5, 0.5)
     radius = 0.5
     number_of_rings = len(input_data)
     cutout_angle = 20
